@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DropLink</title>
+  <style>
+    body{font-family:Segoe UI,Arial,sans-serif;background:#f5f7fb;margin:0;color:#172033}
+    .wrap{max-width:850px;margin:40px auto;padding:20px}
+    .card{background:white;border-radius:18px;padding:24px;box-shadow:0 8px 30px #0001;margin-bottom:18px}
+    h1{margin:0 0 6px}.muted{color:#697386}
+    .device{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px;border:1px solid #e6e9ef;border-radius:14px;margin:10px 0}
+    .dot{display:inline-block;width:9px;height:9px;background:#20a464;border-radius:50%;margin-right:7px}
+    .btn{border:0;border-radius:10px;padding:10px 15px;background:#1d6ff2;color:white;cursor:pointer}
+    .btn:disabled{opacity:.5;cursor:not-allowed}progress{width:100%;height:16px}
+    .tag{font-size:12px;background:#eef3ff;padding:5px 8px;border-radius:8px;margin-left:7px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card"><h1>DropLink</h1><div class="muted">Bluetooth discovery + Wi-Fi file transfer</div></div>
+    <div class="card">
+      <h2>Send from your phone</h2>
+      <div class="muted">Connect your phone to the same Wi-Fi, then open this address:</div>
+      <p><a id="phone-link" href="/phone">Loading phone upload address…</a></p>
+      <div class="muted">Choose files on your phone to upload them to this computer.</div>
+    </div>
+    <div class="card">
+      <h2>Nearby devices</h2>
+      <div id="status" class="muted">Searching over Wi-Fi and Bluetooth…</div>
+      <div id="devices"></div>
+    </div>
+    <div class="card">
+      <h2>Send a file</h2>
+      <input id="file" type="file">
+      <div id="target" class="muted" style="margin:12px 0">Select a Wi-Fi device above.</div>
+      <button class="btn" id="send" disabled>Send file</button>
+      <div style="margin-top:15px"><progress id="progress" value="0" max="100"></progress><div id="ptext" class="muted"></div></div>
+    </div>
+    <div class="card"><h2>Bluetooth</h2><div id="ble" class="muted">Searching for devices advertising the DropLink service.</div></div>
+  </div>
+  <script>
+    let devices = [];
+    let selected = null;
+
+    async function discover() {
+      try {
+        const response = await fetch('/api/discover');
+        if (response.ok) {
+          devices = await response.json();
+          render();
+        }
+      } catch (_) {
+        document.getElementById('status').textContent = 'Discovery request failed. Check that DropLink is running.';
+      } finally {
+        setTimeout(discover, 3000);
+      }
+    }
+
+    function render() {
+      const list = document.getElementById('devices');
+      const status = document.getElementById('status');
+      const bleCount = devices.filter(device => device.transport === 'Bluetooth').length;
+      const wifiCount = devices.filter(device => device.ip && device.port).length;
+      list.replaceChildren();
+      status.textContent = `${wifiCount} Wi-Fi device(s), ${bleCount} Bluetooth device(s) found.`;
+      document.getElementById('ble').textContent = bleCount
+        ? `Found ${bleCount} device(s) advertising the DropLink Bluetooth service.`
+        : 'No DropLink Bluetooth advertisements found. Bluetooth scanning may be unavailable or disabled.';
+
+      if (!devices.length) {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'No DropLink devices found. Make sure the other device is running DropLink and allow Bluetooth or LAN discovery.';
+        list.append(empty);
+      }
+
+      for (const device of devices) {
+        const row = document.createElement('div');
+        row.className = 'device';
+        const description = document.createElement('div');
+        const name = document.createElement('b');
+        name.textContent = device.name || 'DropLink device';
+        const details = document.createElement('div');
+        details.className = 'muted';
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        details.append(dot, document.createTextNode(device.ip ? `${device.ip}:${device.port}` : `BLE ${device.address || ''}`));
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = device.transport === 'Bluetooth' ? 'Bluetooth' : 'Wi-Fi';
+        details.append(tag);
+        if (!device.ip && Number.isFinite(device.rssi)) details.append(document.createTextNode(` RSSI ${device.rssi} dBm`));
+        if (!device.ip) {
+          const note = document.createElement('div');
+          note.className = 'muted';
+          note.textContent = 'Nearby over Bluetooth; waiting for a Wi-Fi connection to enable transfer.';
+          description.append(name, details, note);
+        } else {
+          description.append(name, details);
+        }
+        const button = document.createElement('button');
+        button.className = 'btn';
+        button.textContent = device.ip ? 'Select' : 'Bluetooth found';
+        button.disabled = !device.ip;
+        button.onclick = () => {
+          selected = device;
+          document.getElementById('target').textContent = `Selected: ${device.name}`;
+          document.getElementById('send').disabled = false;
+        };
+        row.append(description, button);
+        list.append(row);
+      }
+    }
+
+    function send() {
+      if (!selected) return;
+      const file = document.getElementById('file').files[0];
+      if (!file) return alert('Choose a file first.');
+      const form = new FormData();
+      form.append('file', file);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `http://${selected.ip}:${selected.port}/api/upload`);
+      xhr.upload.onprogress = event => {
+        if (event.lengthComputable) {
+          const percent = event.loaded / event.total * 100;
+          document.getElementById('progress').value = percent;
+          document.getElementById('ptext').textContent = `${Math.round(percent)}%`;
+        }
+      };
+      xhr.onload = () => document.getElementById('ptext').textContent = xhr.status === 200 ? 'Transfer complete' : 'Transfer failed';
+      xhr.onerror = () => document.getElementById('ptext').textContent = 'Connection failed';
+      xhr.send(form);
+    }
+
+    document.getElementById('send').onclick = send;
+    fetch('/api/info').then(response => response.json()).then(info => {
+      const link = document.getElementById('phone-link');
+      link.href = info.phone_url;
+      link.textContent = info.phone_url;
+    }).catch(() => {
+      document.getElementById('phone-link').textContent = 'Could not determine this computer’s Wi-Fi address.';
+    });
+    discover();
+  </script>
+</body>
+</html>

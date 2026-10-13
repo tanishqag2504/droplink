@@ -1,0 +1,5 @@
+Flask>=3.0
+bleak>=0.22
+requests>=2.31
+cryptography>=42.0
+winrt-Windows.Devices.Bluetooth>=2.0; platform_system == "Windows"
